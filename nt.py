@@ -24,6 +24,7 @@ class Todo:
     tags: List[str]
     created: str  # yyyy-mm-dd
     status: str = "open"
+    due: Optional[str] = None  # yyyy-mm-dd desired completion date
     completed: Optional[str] = None  # yyyy-mm-dd when done
 
 
@@ -35,6 +36,7 @@ class TodoEntry:
     file: Path
     line_no: int
     status: str = "open"
+    due: Optional[str] = None  # yyyy-mm-dd desired completion date
     completed: Optional[str] = None  # yyyy-mm-dd when done
 
 
@@ -77,6 +79,11 @@ class NTApp:
         if completed:
             body = re.sub(r"\s*@done\s+\d{4}-\d{2}-\d{2}", "", body).strip()
 
+        due_match = re.search(r"@due\s+(?P<date>\d{4}-\d{2}-\d{2})", body)
+        due = due_match.group("date") if due_match else None
+        if due:
+            body = re.sub(r"\s*@due\s+\d{4}-\d{2}-\d{2}", "", body).strip()
+
         tags = re.findall(r"#([\w-]+)", body)
         text = re.sub(r"#([\w-]+)", "", body).strip()
 
@@ -92,6 +99,7 @@ class NTApp:
             file=file_path,
             line_no=line_no,
             status=status,
+            due=due,
             completed=completed,
         )
 
@@ -136,35 +144,40 @@ class NTApp:
         todos.sort(key=lambda t: (t.created, t.file.as_posix(), t.line_no))
         return todos
 
-    def add_todo(self, text: str, tags: List[str], target_date: date) -> None:
+    def add_todo(
+        self, text: str, tags: List[str], target_date: date, due_date: Optional[date]
+    ) -> None:
         todo = Todo(
             text=text,
             tags=sorted(set(tags)),
             created=target_date.isoformat(),
+            due=due_date.isoformat() if due_date else None,
         )
 
         note_path = self.ensure_note_file(target_date)
         tag_str = " ".join(f"#{t}" for t in todo.tags) if todo.tags else ""
         line = f"- [ ] {todo.text}"
+        if todo.due:
+            line += f" @due {todo.due}"
         if tag_str:
             line += f" {tag_str}"
         self.append_to_section(note_path, "## Todos", line)
-        print(f"Added todo -> {todo.text}")
+        print(f"added todo -> {todo.text}")
 
     def update_todo_status(self, index: int, status: str) -> None:
         todos = self.load_todos()
         if not (1 <= index <= len(todos)):
-            raise SystemExit(f"Todo #{index} does not exist.")
+            raise SystemExit(f"todo #{index} does not exist.")
         todo = todos[index - 1]
         if todo.status == status:
-            print(f"Todo #{index} already {status}.")
+            print(f"todo #{index} already {status}.")
             return
 
         lines = todo.file.read_text(encoding="utf-8").splitlines()
         try:
             original = lines[todo.line_no - 1]
         except IndexError:
-            raise SystemExit(f"Todo #{index} could not be updated (line missing).")
+            raise SystemExit(f"todo #{index} could not be updated (line missing).")
 
         if status == "done":
             updated = re.sub(r"^- \[( |x)\] ", "- [x] ", original, count=1)
@@ -181,39 +194,55 @@ class NTApp:
 
         todo.status = status
         todo.completed = completed_date
-        print(f"Updated todo #{index} -> {status}: {todo.text}")
+        print(f"updated todo #{index} -> {status}: {todo.text}")
 
     def list_todos(self, status_filter: str = "all") -> None:
         todos = self.load_todos()
         if status_filter != "all":
             todos = [t for t in todos if t.status == status_filter]
         if not todos:
-            print("No todos recorded.")
+            print("no todos recorded.")
             return
         for idx, todo in enumerate(todos, start=1):
             tag_str = ", ".join(todo.tags) if todo.tags else "no tags"
             status_label = todo.status
             if todo.status == "done" and todo.completed:
                 status_label = f"done @ {todo.completed}"
-            print(f"{idx}. {todo.created} :: {todo.text} [{tag_str}] ({status_label})")
+            labels = [status_label]
+            if todo.due:
+                labels.append(f"due {todo.due}")
+            print(
+                f"{idx}. {todo.created} :: {todo.text} [{tag_str}] ({'; '.join(labels)})"
+            )
 
-    def agenda(self) -> None:
-        todos = [
-            (idx, todo)
-            for idx, todo in enumerate(self.load_todos(), start=1)
-            if todo.status == "open"
-        ]
+    def agenda(self, tags: Optional[List[str]] = None) -> None:
+        todos = []
+        for idx, todo in enumerate(self.load_todos(), start=1):
+            if todo.status != "open":
+                continue
+            if tags and not set(tags).issubset(set(todo.tags)):
+                continue
+            todos.append((idx, todo))
         if not todos:
-            print("No open todos.")
+            print("no open todos.")
             return
 
         by_date = {}
         for idx, todo in todos:
-            by_date.setdefault(todo.created, []).append((idx, todo))
+            key = todo.due or todo.created
+            by_date.setdefault(key, []).append((idx, todo))
 
-        for created in sorted(by_date.keys()):
-            print(created)
-            for idx, todo in by_date[created]:
+        for key in sorted(by_date.keys()):
+            print(key)
+            entries = sorted(
+                by_date[key],
+                key=lambda pair: (
+                    pair[1].created,
+                    pair[1].file.as_posix(),
+                    pair[1].line_no,
+                ),
+            )
+            for idx, todo in entries:
                 tag_str = " ".join(f"#{t}" for t in todo.tags) if todo.tags else ""
                 try:
                     rel = todo.file.relative_to(self.base_dir)
@@ -223,6 +252,8 @@ class NTApp:
                 line = f"  [{idx}] {todo.text}"
                 if tag_str:
                     line += f" {tag_str}"
+                if todo.due:
+                    line += f" (due {todo.due})"
                 line += location
                 print(line)
 
@@ -260,9 +291,9 @@ class NTApp:
         try:
             subprocess.run([editor, str(note_path)], check=True)
         except FileNotFoundError:
-            print(f"Editor {editor!r} not found. Set $EDITOR to your preferred editor.")
+            print(f"editor {editor!r} not found. set $EDITOR to your preferred editor.")
         except subprocess.CalledProcessError as exc:
-            print(f"Editor exited with status {exc.returncode}")
+            print(f"editor exited with status {exc.returncode}")
 
 
 def parse_date(value: Optional[str]) -> date:
@@ -273,12 +304,12 @@ def parse_date(value: Optional[str]) -> date:
             return datetime.strptime(value, fmt).date()
         except ValueError:
             continue
-    raise SystemExit(f"Could not parse date {value!r}; use YYYY-MM-DD or DD-MM-YYYY.")
+    raise SystemExit(f"could not parse date {value!r}; use YYYY-MM-DD or DD-MM-YYYY.")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="nt: simple daily notes + todo helper",
+        description="nt: command line productivity tool",
         usage="nt [todo|list|agenda|open|note|<tag> ...]",
     )
     sub = parser.add_subparsers(dest="command")
@@ -289,6 +320,10 @@ def build_parser() -> argparse.ArgumentParser:
         "-t", "--tag", action="append", dest="tags", default=[], help="tag"
     )
     todo_p.add_argument("--date", help="target date (YYYY-MM-DD or DD-MM-YYYY)")
+    todo_p.add_argument(
+        "--due",
+        help="desired completion date for the todo (YYYY-MM-DD or DD-MM-YYYY)",
+    )
 
     list_p = sub.add_parser("list", help="list all todos")
     list_p.add_argument(
@@ -300,6 +335,14 @@ def build_parser() -> argparse.ArgumentParser:
     list_p.set_defaults(command="list")
 
     agenda_p = sub.add_parser("agenda", help="agenda view grouped by date")
+    agenda_p.add_argument(
+        "-t",
+        "--tag",
+        action="append",
+        dest="tags",
+        default=[],
+        help="filter agenda to todos containing this tag (can be repeated)",
+    )
     agenda_p.set_defaults(command="agenda")
 
     done_p = sub.add_parser("done", help="mark a todo as done")
@@ -330,7 +373,7 @@ def maybe_quick_note_from_args(argv: List[str]) -> Optional[argparse.Namespace]:
     if not argv or argv[0] in known:
         return None
     if len(argv) < 2:
-        raise SystemExit('Usage: nt <tag...> "your message"')
+        raise SystemExit('usage: nt <tag...> "your message"')
     message = argv[-1]
     tags = argv[:-1]
     ns = argparse.Namespace(command="note", message=message, tags=tags, date=None)
@@ -350,7 +393,12 @@ def main(argv: List[str]) -> None:
             return
 
     if args.command == "todo":
-        app.add_todo(args.text, args.tags, parse_date(args.date))
+        app.add_todo(
+            args.text,
+            args.tags,
+            parse_date(args.date),
+            parse_date(args.due) if getattr(args, "due", None) else None,
+        )
     elif args.command == "list":
         app.list_todos(args.status)
     elif args.command == "done":
@@ -358,13 +406,13 @@ def main(argv: List[str]) -> None:
     elif args.command == "reopen":
         app.update_todo_status(args.index, "open")
     elif args.command == "agenda":
-        app.agenda()
+        app.agenda(args.tags)
     elif args.command == "open":
         app.open_note(parse_date(args.date if hasattr(args, "date") else None))
     elif args.command == "note":
         app.quick_note(args.message, args.tags, parse_date(getattr(args, "date", None)))
     else:
-        raise SystemExit(f"Unknown command {args.command}")
+        raise SystemExit(f"unknown command {args.command}")
 
 
 if __name__ == "__main__":
