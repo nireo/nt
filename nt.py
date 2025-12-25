@@ -13,7 +13,7 @@ from typing import List, Optional
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_BASE = Path(os.environ.get("NT_HOME", SCRIPT_DIR / ".nt"))
+DEFAULT_BASE = Path(os.environ.get("NT_HOME", Path.home() / ".nt"))
 NOTE_DIR_NAME = "notes"
 DATE_FORMAT = "%d-%m-%Y"
 
@@ -284,7 +284,72 @@ class NTApp:
         lines.insert(insert_at, line)
         note_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    # ------------- open -------------
+    def list_notes_fzf(self) -> None:
+        if not self.notes_dir.exists():
+            print("no notes recorded.")
+            return
+        note_files = []
+        for path in self.notes_dir.rglob("*.md"):
+            note_date = self.date_from_note_path(path)
+            if note_date is None:
+                continue
+            note_files.append((note_date, path))
+        if not note_files:
+            print("no notes recorded.")
+            return
+
+        note_files.sort(key=lambda pair: pair[0], reverse=True)
+        lines = []
+        for note_date, path in note_files:
+            try:
+                rel = path.relative_to(self.base_dir)
+            except ValueError:
+                rel = path
+            lines.append(f"{note_date.isoformat()}\t{rel}")
+
+        cmd = ["fzf", "--multi", "--delimiter", "\t", "--with-nth", "1,2"]
+        try:
+            res = subprocess.run(
+                cmd,
+                input="\n".join(lines),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            raise SystemExit("fzf not found. install fzf to use `nt notes`.")
+
+        if res.returncode == 130:
+            return
+        if res.returncode != 0:
+            raise SystemExit(
+                f"fzf failed with exit code {res.returncode}: {res.stderr.strip()}"
+            )
+        if not res.stdout:
+            return
+
+        selected_paths: List[Path] = []
+        for line in res.stdout.splitlines():
+            parts = line.split("\t", 1)
+            if len(parts) != 2:
+                continue
+            path_str = parts[1]
+            path = Path(path_str)
+            if not path.is_absolute():
+                path = self.base_dir / path
+            selected_paths.append(path)
+
+        if not selected_paths:
+            return
+
+        editor = os.environ.get("EDITOR") or "nano"
+        try:
+            subprocess.run([editor, *[str(p) for p in selected_paths]], check=True)
+        except FileNotFoundError:
+            print(f"editor {editor!r} not found. set $EDITOR to your preferred editor.")
+        except subprocess.CalledProcessError as exc:
+            print(f"editor exited with status {exc.returncode}")
+
     def open_note(self, target_date: date) -> None:
         note_path = self.ensure_note_file(target_date)
         editor = os.environ.get("EDITOR") or "nano"
@@ -310,7 +375,8 @@ def parse_date(value: Optional[str]) -> date:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="nt: command line productivity tool",
-        usage="nt [todo|list|agenda|open|note|<tag> ...]",
+        usage="nt [todo|list|agenda|open|notes|note|<tag> ...]",
+        epilog="notes are stored in $NT_HOME (default: $HOME/.nt)",
     )
     sub = parser.add_subparsers(dest="command")
 
@@ -358,6 +424,9 @@ def build_parser() -> argparse.ArgumentParser:
         "date", nargs="?", help="target date (YYYY-MM-DD or DD-MM-YYYY)"
     )
 
+    notes_p = sub.add_parser("notes", help="pick daily notes via fzf")
+    notes_p.set_defaults(command="notes")
+
     note_p = sub.add_parser("note", help="add a quick note with tags")
     note_p.add_argument("message", help="note text")
     note_p.add_argument(
@@ -369,7 +438,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def maybe_quick_note_from_args(argv: List[str]) -> Optional[argparse.Namespace]:
-    known = {"todo", "list", "agenda", "open", "note", "done", "reopen", "-h", "--help"}
+    known = {
+        "todo",
+        "list",
+        "agenda",
+        "open",
+        "notes",
+        "note",
+        "done",
+        "reopen",
+        "-h",
+        "--help",
+    }
     if not argv or argv[0] in known:
         return None
     if len(argv) < 2:
@@ -409,6 +489,8 @@ def main(argv: List[str]) -> None:
         app.agenda(args.tags)
     elif args.command == "open":
         app.open_note(parse_date(args.date if hasattr(args, "date") else None))
+    elif args.command == "notes":
+        app.list_notes_fzf()
     elif args.command == "note":
         app.quick_note(args.message, args.tags, parse_date(getattr(args, "date", None)))
     else:
