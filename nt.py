@@ -9,8 +9,6 @@ import sys
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import List, Optional
-
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_BASE = Path(os.environ.get("NT_HOME", Path.home() / ".nt"))
@@ -21,23 +19,23 @@ DATE_FORMAT = "%d-%m-%Y"
 @dataclass
 class Todo:
     text: str
-    tags: List[str]
+    tags: list[str]
     created: str  # yyyy-mm-dd
     status: str = "open"
-    due: Optional[str] = None  # yyyy-mm-dd desired completion date
-    completed: Optional[str] = None  # yyyy-mm-dd when done
+    due: str | None = None  # yyyy-mm-dd desired completion date
+    completed: str | None = None  # yyyy-mm-dd when done
 
 
 @dataclass
 class TodoEntry:
     text: str
-    tags: List[str]
+    tags: list[str]
     created: str
     file: Path
     line_no: int
     status: str = "open"
-    due: Optional[str] = None  # yyyy-mm-dd desired completion date
-    completed: Optional[str] = None  # yyyy-mm-dd when done
+    due: str | None = None  # yyyy-mm-dd desired completion date
+    completed: str | None = None  # yyyy-mm-dd when done
 
 
 class NTApp:
@@ -69,7 +67,7 @@ class NTApp:
 
     def parse_todo_line(
         self, line: str, file_path: Path, line_no: int
-    ) -> Optional[TodoEntry]:
+    ) -> TodoEntry | None:
         match = re.match(r"^- \[( |x)\] (?P<body>.+)$", line)
         if not match:
             return None
@@ -103,13 +101,13 @@ class NTApp:
             completed=completed,
         )
 
-    def date_from_note_path(self, note_path: Path) -> Optional[date]:
+    def date_from_note_path(self, note_path: Path) -> date | None:
         try:
             return datetime.strptime(note_path.stem, DATE_FORMAT).date()
         except ValueError:
             return None
 
-    def todo_matches_from_rg(self) -> List[TodoEntry]:
+    def todo_matches_from_rg(self) -> list[TodoEntry]:
         if not self.notes_dir.exists():
             return []
         pattern = r"^- \[( |x)\] "
@@ -128,7 +126,7 @@ class NTApp:
                 f"ripgrep failed with exit code {res.returncode}: {res.stderr.strip()}"
             )
 
-        entries: List[TodoEntry] = []
+        entries: list[TodoEntry] = []
         for line in res.stdout.splitlines():
             try:
                 path_str, line_no_str, content = line.split(":", 2)
@@ -139,13 +137,13 @@ class NTApp:
                 entries.append(todo)
         return entries
 
-    def load_todos(self) -> List[TodoEntry]:
+    def load_todos(self) -> list[TodoEntry]:
         todos = self.todo_matches_from_rg()
         todos.sort(key=lambda t: (t.created, t.file.as_posix(), t.line_no))
         return todos
 
     def add_todo(
-        self, text: str, tags: List[str], target_date: date, due_date: Optional[date]
+        self, text: str, tags: list[str], target_date: date, due_date: date | None
     ) -> None:
         todo = Todo(
             text=text,
@@ -215,7 +213,7 @@ class NTApp:
                 f"{idx}. {todo.created} :: {todo.text} [{tag_str}] ({'; '.join(labels)})"
             )
 
-    def agenda(self, tags: Optional[List[str]] = None) -> None:
+    def agenda(self, tags: list[str] | None = None) -> None:
         todos = []
         for idx, todo in enumerate(self.load_todos(), start=1):
             if todo.status != "open":
@@ -257,7 +255,7 @@ class NTApp:
                 line += location
                 print(line)
 
-    def quick_note(self, message: str, tags: List[str], target_date: date) -> None:
+    def quick_note(self, message: str, tags: list[str], target_date: date) -> None:
         note_path = self.ensure_note_file(target_date)
         timestamp = datetime.now().strftime("%H:%M")
         tag_str = " ".join(f"#{t}" for t in sorted(set(tags))) if tags else ""
@@ -328,7 +326,7 @@ class NTApp:
         if not res.stdout:
             return
 
-        selected_paths: List[Path] = []
+        selected_paths: list[Path] = []
         for line in res.stdout.splitlines():
             parts = line.split("\t", 1)
             if len(parts) != 2:
@@ -361,7 +359,7 @@ class NTApp:
             print(f"editor exited with status {exc.returncode}")
 
 
-def parse_date(value: Optional[str]) -> date:
+def parse_date(value: str | None) -> date:
     if value is None:
         return date.today()
     for fmt in ("%Y-%m-%d", DATE_FORMAT):
@@ -437,7 +435,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def maybe_quick_note_from_args(argv: List[str]) -> Optional[argparse.Namespace]:
+def maybe_quick_note_from_args(argv: list[str]) -> argparse.Namespace | None:
     known = {
         "todo",
         "list",
@@ -460,7 +458,7 @@ def maybe_quick_note_from_args(argv: List[str]) -> Optional[argparse.Namespace]:
     return ns
 
 
-def main(argv: List[str]) -> None:
+def main(argv: list[str]) -> None:
     app = NTApp()
     quick_note_ns = maybe_quick_note_from_args(argv)
     if quick_note_ns:
